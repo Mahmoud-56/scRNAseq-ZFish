@@ -1,0 +1,573 @@
+---
+title: "scRNA-analysis-EEC/GRPR"
+output: html_document
+date: "2025-05-19"
+---
+
+
+
+```{r, message=FALSE}
+options(warn = -1) 
+library(ggpubr)
+library(Seurat)
+library(dplyr)
+library(tibble)
+library(ggplot2)
+library(patchwork)
+library(org.Dr.eg.db)
+library(pheatmap)
+library(clusterProfiler)
+library(devtools)
+```
+
+```{r}
+setwd("/gpfs/home/malm/scRNAseq-ZFish/")
+```
+
+# How does BefA impact EEC cells? 
+
+##  Background 
+
+
+Enteroendocrine cells (EECs) are specialized sensory cells in the intestinal epithelium that serve as the primary nutrient sensors of the gut, despite comprising only about 1% of gut epithelial cells. These hormone-secreting cells exist in two morphological types - "open" cells with apical surfaces exposed to the gut lumen that directly detect ingested nutrients, and "closed" cells positioned near the basal lamina. EECs respond to nutrients like carbohydrates, fatty acids, and peptides through membrane depolarization, calcium influx, and subsequent release of over 15 different hormones that regulate crucial physiological processes including gut motility, satiation, insulin sensitivity, and nutrient absorption. Beyond endocrine signaling through circulation, EECs communicate via paracrine signaling and neuronal connections, particularly through the vagus nerve to the brain, forming a critical gut-brain axis that integrates nutrient status with whole-body metabolism. In zebrafish, which possess conserved EEC populations that become functional by 5 days post-fertilization, these cells represent an important first link between dietary nutrients and systemic metabolic regulation. Given their role as multifunctional nutrient sensors and signaling hubs, EECs are a compelling cellular target through which BefA could potentially influence gut-brain communication and broader metabolic processes.
+
+
+
+```{r}
+mydata <- readRDS("/gpfs/home/malm/bgmp/bioinfo/scRNAseq-ZFish/all.treatments.integrated.ann_3.rds")
+```
+
+```{r, message=FALSE}
+markers <- c("anxa4", "neurod1", "nkx2.2a")
+ensembl_ids <- mapIds(org.Dr.eg.db,
+                     keys = markers,
+                     column = "ENSEMBL",
+                     keytype = "SYMBOL",
+                     multiVals = "first")
+```
+
+
+```{r}
+ DimPlot(mydata, reduction = "umap", label = TRUE) + NoLegend()
+# VlnPlot(mydata, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+```
+## Localization of EEC markers 
+
+
+```{r,message=FALSE}
+DefaultAssay(mydata) <- "RNA"
+
+markers <- data.frame(
+  ensembl = c("ENSDARG00000036456", "ENSDARG00000019566", "ENSDARG00000053298"),
+  gene = c("anxa4", "neurod1", "nkx2.2a"),
+  stringsAsFactors = FALSE
+)
+
+plot_list <- lapply(1:nrow(markers), function(i) {
+  FeaturePlot(mydata,
+              features = markers$ensembl[i],  
+              reduction = "umap",
+              order = TRUE,
+              pt.size = 0.5,
+              cols = c("lightgrey", "blue")) +
+    ggtitle(markers$gene[i]) +  #  gene name
+    labs(x = "UMAP_1", y = "UMAP_2") +
+    theme(plot.title = element_text(face = "bold", hjust = 0.5, size = 12),
+          legend.position = "right",
+          axis.text = element_blank(),
+          axis.ticks = element_blank())
+})
+plot_list
+
+```
+
+
+
+## How many cells are + for anxa4, neurod1, and nkx2.2a across dataset?
+
+```{r}
+anxa4_go <- subset(mydata, subset = ENSDARG00000036456 > 0)
+table(anxa4_go$treatment)
+```
+
+```{r}
+neurod1_go <- subset(mydata, subset = ENSDARG00000019566 > 0)
+table(neurod1_go$treatment)
+
+```
+
+```{r}
+nkx2.2a_go <- subset(mydata, subset = ENSDARG00000053298 > 0)
+table(nkx2.2a_go$treatment)
+```
+
+## How many cells are + for all three markers across treatments ?
+
+```{r}
+DefaultAssay(mydata) <- "RNA"
+
+valid_genes <- c("ENSDARG00000036456", "ENSDARG00000019566", "ENSDARG00000053298")
+
+expr_data <- FetchData(mydata, 
+                      vars = c(valid_genes, "treatment"),
+                      layer = "data")  
+
+# Count cells positive for all markers
+triple_positive_cells <- expr_data %>%
+  mutate(across(all_of(valid_genes), ~ . > 0)) %>%  
+  filter(if_all(all_of(valid_genes))) %>%           
+  group_by(treatment) %>%
+  summarise(n_cells = n())
+
+data.frame(triple_positive_cells)
+
+
+```
+
+
+## Top DEG in Cluster 17
+
+Cluster 17 has the most cells expressing the above 3 markers.
+
+
+```{r, warning=FALSE, message=FALSE}
+
+Idents(mydata) <- "seurat_clusters"
+cluster17_degs <- FindMarkers(mydata,
+                            ident.1 = 17,            
+                            ident.2 = NULL,            
+                            min.pct = 0.25,             
+                            logfc.threshold = 0.5,      
+                            test.use = "wilcox",       
+                            only.pos = TRUE)   
+```
+
+
+
+```{r, message=FALSE}
+cluster17_degs <- cluster17_degs %>%
+  mutate(
+    gene_symbol = mapIds(org.Dr.eg.db, 
+                        keys = rownames(.), 
+                        column = "SYMBOL", 
+                        keytype = "ENSEMBL")
+  ) %>%
+  filter(p_val_adj < 0.05) %>%
+  arrange(desc(avg_log2FC))
+```
+
+```{r}
+top20_genes <- head(cluster17_degs, 20)
+
+
+# Subset Cluster 17 cells only
+cluster17_cells <- subset(mydata, seurat_clusters == 17)
+
+# Compare expression in BefA vs. GF
+DotPlot(cluster17_cells,
+        features = rownames(top20_genes),  
+        group.by = "treatment",
+        assay = "RNA",
+        cols = c("blue", "red"),
+        dot.scale = 6) +
+  scale_x_discrete(labels = top20_genes$gene_symbol) + 
+  labs(title = "Top 20 DEGs in Cluster 17: BefA vs. GF",
+       x = NULL,
+       y = "Treatment",
+       color = "Avg. Expression",
+       size = "% Expressed") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic"))
+
+```
+
+## Differntial expression of EEC markers list in cluster 17
+
+
+I first looked at the level of expression of the each of the markers listed in Michelles analysis, and I removed those that don't have any expression in any of the clusters, to end up with the list below. 
+
+
+```{r}  
+
+EEC_genes <- c(
+  "anxa4", "neurod1", "nkx2.2a", "pcloa", "rem", "pax6b",
+  "syt1a", "FFAR2", "pcsk1nl", "pygma", "chga", 
+  "zgc:101731", "scg2b", "Irrn1", "si:dkey-1h6.8",
+  "armc4", "bdnf", "vip2"
+)
+
+
+EEC_ids <- mapIds(org.Dr.eg.db,
+                     keys = EEC_genes,
+                     column = "ENSEMBL",
+                     keytype = "SYMBOL",
+                     multiVals = "first")
+
+
+cluster17_cells <- WhichCells(mydata, idents = 17)
+my_cluster17 <- subset(mydata, cells = cluster17_cells)
+
+
+EEC_ids_clean <- na.omit(EEC_ids) 
+gene_symbols <- names(EEC_ids_clean)
+names(gene_symbols) <- EEC_ids_clean  
+
+
+DefaultAssay(my_cluster17) <- "RNA"
+
+
+Idents(my_cluster17) <- my_cluster17$treatment
+
+
+DotPlot(my_cluster17,
+        features = names(gene_symbols),  
+        group.by = "treatment") +
+  scale_x_discrete(labels = gene_symbols) + 
+  ggtitle("EEC Gene Expression in Cluster 17 (befa vs gf vs cv)") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(hjust = 0.5)
+  )
+
+```
+
+```{r}
+
+avg_exp <- AggregateExpression(
+  my_cluster17,
+  features = names(gene_symbols),
+  group.by = "treatment"
+)$RNA 
+
+rownames(avg_exp) <- gene_symbols[match(rownames(avg_exp), names(gene_symbols))]
+
+
+pheatmap(
+  avg_exp,
+  scale = "row", 
+  cluster_rows = TRUE,  
+  cluster_cols = FALSE,
+  angle_col = 45, 
+  main = "EEC Gene Expression in Cluster 17 (befa vs gf vs cv)"
+)
+
+```
+
+## Enrichment analysis of all cells in cluster 17 
+
+```{r}
+
+Idents(mydata) <- "seurat_clusters"
+
+deg_cluster17 <- FindMarkers(mydata, ident.1 = 17, only.pos = TRUE)
+deg_genes <- rownames(deg_cluster17[deg_cluster17$p_val_adj < 0.05, ])
+
+
+entrez_ids <- mapIds(org.Dr.eg.db,
+                     keys = deg_genes,
+                     column = "ENTREZID",
+                     keytype = "ENSEMBL",
+                     multiVals = "first")
+
+entrez_ids <- na.omit(entrez_ids)
+
+
+ego <- enrichGO(gene = entrez_ids,
+                OrgDb = org.Dr.eg.db,
+                keyType = "ENTREZID",
+                ont = "BP",
+                pAdjustMethod = "BH",
+                qvalueCutoff = 0.05,
+                readable = TRUE)
+
+```
+
+```{r}
+# VlnPlot(mydata, features = c("ENSDARG00000055539", "ENSDARG00000053625"), 
+#         group.by = "seurat_clusters")  
+```
+
+```{r}
+dotplot(ego, showCategory = 15, title = "GO Enrichment in Cluster 17 DEGs") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+
+
+Dot plot below showing the top differentially expressed genes (DEGs) in Cluster 17, ordered by log2 fold change (point size) and colored by the fraction of cells expressing each gene in their primary cluster. X-axis indicates the cluster where each gene shows highest expression (minimum 25% detection rate). Viridis plasma scale represents expression prevalence, highlighting genes that are both strongly upregulated and cluster-specific. The plot reveals key candidate markers driving Cluster 17's biological identity.
+
+*(Visualization parameters: Point size range = 3–8; Frac. Exp. limits = 0–1; p-adjusted < 0.05)*
+```{r}
+
+top20_genes <- deg_cluster17 %>% 
+  arrange(desc(avg_log2FC)) %>% 
+  rownames() %>% 
+  head(20)
+
+# Get expression matrix (normalized counts)
+expr_data <- GetAssayData(mydata, slot = "data")[top20_genes, ]
+
+# Calculate cluster averages
+cluster_stats <- lapply(levels(mydata$seurat_clusters), function(cl){
+  cells_in_cluster <- colnames(mydata)[mydata$seurat_clusters == cl]
+  cl_expr <- expr_data[, cells_in_cluster]
+  data.frame(
+    avg_exp = rowMeans(cl_expr),
+    frac_exp = rowMeans(cl_expr > 0)
+  )
+})
+
+# Combine results
+all_stats <- do.call(cbind, cluster_stats)
+colnames(all_stats) <- paste0(rep(levels(mydata$seurat_clusters), each = 2), 
+                             c("_avg", "_frac"))
+
+# Find primary cluster for each gene
+results <- data.frame(
+  Gene = top20_genes,
+  avg_log2FC = deg_cluster17[top20_genes, "avg_log2FC"]
+)
+
+results$Primary_Cluster <- apply(all_stats[, grep("_frac", colnames(all_stats))], 1, function(x) {
+  if(max(x) > 0.25) {
+    gsub("_frac", "", colnames(all_stats)[which.max(x) * 2])
+  } else {
+    NA
+  }
+})
+
+
+library(biomaRt)
+ensembl <- useMart("ensembl", dataset = "drerio_gene_ensembl")
+gene_symbols <- getBM(attributes = c("ensembl_gene_id", "external_gene_name"),
+                      filters = "ensembl_gene_id",
+                      values = results$Gene,
+                      mart = ensembl)
+```
+
+```{r}
+
+# 1. Add Fraction_In_Primary (maximum fraction across clusters)
+results$Fraction_In_Primary <- apply(all_stats[, grep("_frac", colnames(all_stats))], 1, max)
+
+# 2. Create gene symbol mapping (SAFER APPROACH)
+gene_symbols <- setNames(
+  mapIds(org.Dr.eg.db, 
+         keys = results$Gene,
+         column = "SYMBOL",
+         keytype = "ENSEMBL",
+         multiVals = "first"),
+  results$Gene
+)
+
+# 3. Create plot_data with ALL needed columns
+plot_data <- data.frame(
+  Gene = results$Gene,
+  GeneSymbol = gene_symbols[results$Gene],  # Direct mapping
+  avg_log2FC = results$avg_log2FC,
+  Primary_Cluster = results$Primary_Cluster,
+  Fraction_In_Primary = results$Fraction_In_Primary,
+  stringsAsFactors = FALSE
+) %>% 
+  filter(!is.na(Primary_Cluster))  # Remove NA clusters
+
+# 4. PLOT (verified working)
+ggplot(plot_data, 
+       aes(x = Primary_Cluster,
+           y = reorder(GeneSymbol, avg_log2FC),
+           size = avg_log2FC,
+           color = Fraction_In_Primary)) +
+  geom_point(alpha = 0.8) +
+  scale_size_continuous(name = "Log2FC", range = c(3, 8)) + 
+  scale_color_viridis_c(name = "Frac. Exp.", 
+                       limits = c(0, 1),
+                       option = "plasma") +
+  labs(x = "Cluster", 
+       y = "Gene Symbol",
+       title = "Top Cluster 17 DEGs") +
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+        axis.text.y = element_text(face = "italic", size = 11),
+        plot.title = element_text(hjust = 0.5, face = "bold"))
+
+```
+
+
+
+### Defining EECs
+
+addModuleScore() computes a module score for each cell, based on averaged expression of a gene set (like EEC markers), adjusted by a background control.
+For each cell, Seurat:
+
+- Averages the expression of your marker genes 
+
+- Subtracts the average expression of a matched control gene set
+
+- Returns the difference as the EEC_signature1 score
+
+A positive score means the cell expresses your marker set above background. Scores > 0.5 were considered EEC cells for the purpose of this analysis 
+
+
+```{r}
+
+EEC_ids <- mapIds(org.Dr.eg.db,
+                  keys = EEC_genes,
+                  column = "ENSEMBL",
+                  keytype = "SYMBOL",
+                  multiVals = "first") %>%
+           na.omit()
+
+
+mydata <- AddModuleScore(mydata, features = list(EEC_ids), name = "EEC_signature")
+
+# save EEC classification as a new metadata column (for score > 0.5)
+mydata$EEC_class <- ifelse(mydata$EEC_signature1 > 0.5, "EEC", "Non-EEC")
+
+
+```
+
+
+
+## Enrichment analysis of EECs (enrichgo)
+
+
+
+```{r,fig.width=11, fig.height=9}
+
+
+deg_EEC <- FindMarkers(mydata,
+                       group.by = "EEC_class",
+                       ident.1 = "EEC",
+                       ident.2 = "Non-EEC",
+                       logfc.threshold = 0.25,
+                       min.pct = 0.1)
+
+deg_genes <- rownames(deg_EEC[deg_EEC$p_val_adj < 0.05, ])
+
+entrez_ids <- mapIds(org.Dr.eg.db,
+                     keys = deg_genes,
+                     column = "ENTREZID",
+                     keytype = "ENSEMBL",
+                     multiVals = "first") %>%
+              na.omit()
+
+ego <- enrichGO(gene = entrez_ids,
+                OrgDb = org.Dr.eg.db,
+                keyType = "ENTREZID",
+                ont = "BP",
+                pAdjustMethod = "BH",
+                readable = TRUE)
+
+dotplot(ego, showCategory = 20, title = "Pathway Enrichment in EEC Cells") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+```
+
+
+## What is the distribution of EEC_signiture score? How many cells were lablled as EEC? 
+
+
+```{r}
+hist(mydata$EEC_signature1, breaks = 50)
+
+table(mydata$EEC_class)
+
+```
+
+##  GSEA pathway analysis 
+
+
+```{r, warning=FALSE, message=FALSE,fig.width=10, fig.height=8}
+
+gene_stats <- deg_EEC$avg_log2FC
+names(gene_stats) <- rownames(deg_EEC)
+
+entrez_ids <- mapIds(org.Dr.eg.db,
+                     keys = names(gene_stats),
+                     column = "ENTREZID",
+                     keytype = "ENSEMBL",
+                     multiVals = "first")
+
+# Prepare named vector for GSEA: Entrez → logFC
+gene_stats_named <- gene_stats[!is.na(entrez_ids)]
+names(gene_stats_named) <- entrez_ids[!is.na(entrez_ids)]
+
+# Sort by decreasing logFC
+gene_stats_named <- sort(gene_stats_named, decreasing = TRUE)
+
+gsea_result <- gseGO(geneList = gene_stats_named,
+                     OrgDb = org.Dr.eg.db,
+                     keyType = "ENTREZID",
+                     ont = "BP",
+                     minGSSize = 10,
+                     maxGSSize = 500,
+                     pvalueCutoff = 0.05,
+                     verbose = FALSE)
+
+```
+
+```{r,fig.width=10, fig.height=10}
+dotplot(gsea_result, showCategory = 20, split = ".sign") +
+  facet_grid(.~.sign) +
+  ggtitle("GSEA: Pathways Up/Down in EEC Cells") +
+  theme(plot.title = element_text(hjust = 0.5),
+         axis.text.y = element_text(size = 9))
+
+```
+
+
+## Exploring GRPR Gene 
+
+### **Gene Overview**  
+- **ZFIN ID**: [ZDB-GENE-081015-4](https://zfin.org/ZDB-GENE-081015-4#summary)  
+- **Location**: Plasma membrane  
+- **Function**: Involved in neuropeptide signaling pathways, potentially modulating secretory processes or neuronal communication.  
+
+
+# How many cells are + for grpr across treatments? 
+
+
+```{r}
+grpr <- subset(mydata, subset = ENSDARG00000056620 > 0)
+
+table(grpr$treatment)
+```
+
+## Where is grpr expression localized? 
+
+
+```{r}
+FeaturePlot(mydata, 
+            features = "ENSDARG00000056620",
+            reduction = "umap",
+            order = TRUE,       
+            pt.size = 0.5) +
+  ggtitle("GRPR Expression Across All Cells") +
+  theme(legend.position = "right")
+
+```
+
+## Is grpr differentially expressed with befa compared to other treatments? 
+
+
+```{r}
+
+dot_plot <- DotPlot(
+  mydata,
+  features = "ENSDARG00000056620",
+  group.by = "treatment",
+  assay = "RNA",
+  scale = TRUE,                      # Scale expression across groups
+  dot.scale = 6                      # Adjust dot size
+) +
+  labs(title = "GRPR Expression Levels", y = "Treatment", x = "") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 12),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+dot_plot
+```

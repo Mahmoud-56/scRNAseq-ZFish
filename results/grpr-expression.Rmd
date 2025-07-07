@@ -1,0 +1,113 @@
+---
+title: "grpr expression"
+output: html_document
+date: "2025-05-13"
+---
+
+
+
+## **Gene Overview**  
+- **ZFIN ID**: [ZDB-GENE-081015-4](https://zfin.org/ZDB-GENE-081015-4#summary)  
+- **Location**: Plasma membrane  
+- **Function**: Involved in neuropeptide signaling pathways, potentially modulating secretory processes or neuronal communication.  
+
+```{r}
+mydata1 <- readRDS("/home/malm/scRNAseq-ZFish/dataset3/all.treatments.integrates_DisGut_Ann_3")
+```
+
+```{r, message=FALSE}
+options(warn = -1) 
+library(ggpubr)
+library(Seurat)
+library(dplyr)
+library(tibble)
+
+
+```
+
+
+## How many cells are + for grpr across treatments? 
+
+```{r}
+grpr <- subset(mydata1, subset = ENSDARG00000056620 > 0)
+
+table(grpr$treatment)
+
+```
+
+
+```{r}
+
+mydata_filtered <- subset(mydata1, 
+                          subset = treatment %in% c("befa", "cv", "gf"))
+
+library(ggpubr)  # Required for stat_compare_means
+
+gene_id <- "ENSDARG00000056620"
+
+# Create plot
+plot <- VlnPlot(mydata_filtered,
+                features = gene_id,
+                group.by = "treatment",
+                assay = "RNA",
+                pt.size = 0.1,          # Smaller points for clarity
+                cols = c("#1f77b4", "#ff7f0e", "#2ca02c")) +  # Custom colors
+  ggtitle("GRPR Expression (BefA vs. CV vs. GF)") +
+  ylab("Normalized Expression") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+
+# Add p-values
+plot + stat_compare_means(
+  comparisons = list(
+    c("befa", "gf"),
+    c("befa", "cv"),
+    c("gf", "cv")  # Optional: Add GF vs. CV comparison
+  ),
+  method = "wilcox.test",
+  label = "p.signif",
+  symnum.args = list(
+    cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1),
+    symbols = c("****", "***", "**", "*", "ns")),
+  step.increase = 0.1  # Adjust space between brackets
+)
+
+```
+
+```{r}
+FeaturePlot(mydata1, 
+            features = "ENSDARG00000056620",
+            reduction = "umap",
+            order = TRUE,       
+            pt.size = 0.5,
+            cols = c("lightgrey", "red")) +
+  ggtitle("GRPR Expression Across All Cells") +
+  theme(legend.position = "right")
+
+```
+
+
+## Level of expression of grpr for each cell 
+
+
+
+```{r}
+
+dot_plot <- DotPlot(
+  mydata_filtered,
+  features = "ENSDARG00000056620",
+  group.by = "treatment",
+  assay = "RNA",
+  cols = c("lightgrey", "#E64B35"),  # Gradient from grey to red
+  scale = TRUE,                      # Scale expression across groups
+  dot.scale = 6                      # Adjust dot size
+) +
+  labs(title = "GRPR Expression Levels", y = "Treatment", x = "") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 12),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+dot_plot
+```

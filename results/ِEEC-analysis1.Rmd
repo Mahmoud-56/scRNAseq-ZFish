@@ -1,0 +1,573 @@
+---
+title: "EEC-analysis1"
+output: html_document
+date: "2025-06-12"
+---
+
+```{r, message=FALSE}
+options(warn = -1) 
+library(ggpubr)
+library(Seurat)
+library(dplyr)
+library(tibble)
+library(ggplot2)
+library(patchwork)
+library(org.Dr.eg.db)
+library(pheatmap)
+library(clusterProfiler)
+library(devtools)
+library(speckle)
+library(DESeq2)
+```
+
+
+How does BefA impact EEC cells?
+Background
+
+Enteroendocrine cells (EECs) are specialized sensory cells in the intestinal epithelium that serve as the primary nutrient sensors of the gut, despite comprising only about 1% of gut epithelial cells. These hormone-secreting cells exist in two morphological types - “open” cells with apical surfaces exposed to the gut lumen that directly detect ingested nutrients, and “closed” cells positioned near the basal lamina. EECs respond to nutrients like carbohydrates, fatty acids, and peptides through membrane depolarization, calcium influx, and subsequent release of over 15 different hormones that regulate crucial physiological processes including gut motility, satiation, insulin sensitivity, and nutrient absorption. Beyond endocrine signaling through circulation, EECs communicate via paracrine signaling and neuronal connections, particularly through the vagus nerve to the brain, forming a critical gut-brain axis that integrates nutrient status with whole-body metabolism. In zebrafish, which possess conserved EEC populations that become functional by 5 days post-fertilization, these cells represent an important first link between dietary nutrients and systemic metabolic regulation. Given their role as multifunctional nutrient sensors and signaling hubs, EECs are a compelling cellular target through which BefA could potentially influence gut-brain communication and broader metabolic processes.
+
+
+```{r}
+
+mydata <- readRDS("/gpfs/home/malm/bgmp/bioinfo/scRNAseq-ZFish/all.treatments.integrated.ann_3.rds")
+```
+
+```{r}
+markers <- c("anxa4", "neurod1", "nkx2.2a")
+ensembl_ids <- mapIds(org.Dr.eg.db,
+                     keys = markers,
+                     column = "ENSEMBL",
+                     keytype = "SYMBOL",
+                     multiVals = "first")
+
+```
+
+```{r}
+
+DimPlot(mydata, reduction = "umap", label = TRUE) + NoLegend()
+```
+
+
+### Localization of EEC markers
+
+
+
+```{r}
+DefaultAssay(mydata) <- "RNA"
+
+markers <- data.frame(
+  ensembl = c("ENSDARG00000036456", "ENSDARG00000019566", "ENSDARG00000053298"),
+  gene = c("anxa4", "neurod1", "nkx2.2a"),
+  stringsAsFactors = FALSE
+)
+
+plot_list <- lapply(1:nrow(markers), function(i) {
+  FeaturePlot(mydata,
+              features = markers$ensembl[i],  
+              reduction = "umap",
+              order = TRUE,
+              pt.size = 0.5,
+              cols = c("lightgrey", "blue")) +
+    ggtitle(markers$gene[i]) +  #  gene name
+    labs(x = "UMAP_1", y = "UMAP_2") +
+    theme(plot.title = element_text(face = "bold", hjust = 0.5, size = 12),
+          legend.position = "right",
+          axis.text = element_blank(),
+          axis.ticks = element_blank())
+})
+plot_list
+
+
+
+```
+
+
+### Top DEG in Cluster 17
+
+
+```{r, warning=FALSE}
+
+Idents(mydata) <- "seurat_clusters"
+cluster17_degs <- FindMarkers(mydata,
+                            ident.1 = 17,            
+                            ident.2 = NULL,            
+                            min.pct = 0.25,             
+                            logfc.threshold = 0.5,      
+                            test.use = "wilcox",       
+                            only.pos = TRUE)    
+
+```
+
+```{r, message=FALSE}
+cluster17_degs <- cluster17_degs %>%
+  mutate(
+    gene_symbol = mapIds(org.Dr.eg.db, 
+                        keys = rownames(.), 
+                        column = "SYMBOL", 
+                        keytype = "ENSEMBL")
+  ) %>%
+  filter(p_val_adj < 0.05) %>%
+  arrange(desc(avg_log2FC))
+
+```
+
+```{r}
+top20_genes <- head(cluster17_degs, 20)
+
+
+# Subset Cluster 17 cells only
+cluster17_cells <- subset(mydata, seurat_clusters == 17)
+
+# Compare expression in BefA vs. GF
+DotPlot(cluster17_cells,
+        features = rownames(top20_genes),  
+        group.by = "treatment",
+        assay = "RNA",
+        cols = c("blue", "red"),
+        dot.scale = 6) +
+  scale_x_discrete(labels = top20_genes$gene_symbol) + 
+  labs(title = "Top 20 DEGs in Cluster 17: BefA vs. GF",
+       x = NULL,
+       y = "Treatment",
+       color = "Avg. Expression",
+       size = "% Expressed") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic"))
+
+```
+### Are these genes upregulated in other clusters? 
+
+```{r,fig.width=13, fig.height=9}
+ VlnPlot(mydata, features = c("ENSDARG00000055539", "ENSDARG00000053625", "ENSDARG00000090185"), 
+         group.by = "seurat_clusters")  
+```
+
+## Differntial expression of EEC markers list in cluster 17
+
+I first looked at the level of expression of the each of the markers listed in Michelles analysis, and I removed those that don’t have any expression in any of the clusters, to end up with the list below.
+
+
+```{r, message=FALSE}
+
+EEC_genes <- c(
+  "anxa4", "neurod1", "nkx2.2a", "pcloa", "rem", "pax6b",
+  "syt1a", "FFAR2", "pcsk1nl", "pygma", "chga", 
+  "zgc:101731", "scg2b", "Irrn1", "si:dkey-1h6.8",
+  "armc4", "bdnf", "vip2"
+)
+
+
+EEC_ids <- mapIds(org.Dr.eg.db,
+                     keys = EEC_genes,
+                     column = "ENSEMBL",
+                     keytype = "SYMBOL",
+                     multiVals = "first")
+```
+
+
+```{r}
+# Idents(mydata) <- "seurat_clusters"
+# 
+# my_cluster17 <- subset(mydata, cells = cluster17_cells)
+# avg_exp <- AggregateExpression(
+#   my_cluster17,
+#   features = names(gene_symbols),
+#   group.by = "treatment"
+# )$RNA 
+# 
+# rownames(avg_exp) <- gene_symbols[match(rownames(avg_exp), names(gene_symbols))]
+# 
+# 
+# pheatmap(
+#   avg_exp,
+#   scale = "row", 
+#   cluster_rows = TRUE,  
+#   cluster_cols = FALSE,
+#   angle_col = 45, 
+#   main = "EEC Gene Expression in Cluster 17 (befa vs gf vs cv)"
+# )
+
+```
+
+```{r}
+EEC_genes <- c(
+  "anxa4", "neurod1", "nkx2.2a", "pcloa", "rem", "pax6b",
+  "syt1a", "FFAR2", "pcsk1nl", "pygma", "chga", 
+  "zgc:101731", "scg2b", "Irrn1", "si:dkey-1h6.8",
+  "armc4", "bdnf", "vip2"
+)
+
+
+EEC_ids <- mapIds(org.Dr.eg.db,
+                     keys = EEC_genes,
+                     column = "ENSEMBL",
+                     keytype = "SYMBOL",
+                     multiVals = "first")
+
+
+cluster17_cells <- WhichCells(mydata, idents = 17)
+my_cluster17 <- subset(mydata, cells = cluster17_cells)
+
+
+EEC_ids_clean <- na.omit(EEC_ids) 
+gene_symbols <- names(EEC_ids_clean)
+names(gene_symbols) <- EEC_ids_clean  
+
+
+DefaultAssay(my_cluster17) <- "RNA"
+
+
+Idents(my_cluster17) <- my_cluster17$treatment
+
+
+```
+
+```{r}
+
+avg_exp <- AggregateExpression(
+  my_cluster17,
+  features = names(gene_symbols),
+  group.by = "treatment"
+)$RNA 
+
+rownames(avg_exp) <- gene_symbols[match(rownames(avg_exp), names(gene_symbols))]
+
+
+pheatmap(
+  avg_exp,
+  scale = "row", 
+  cluster_rows = TRUE,  
+  cluster_cols = FALSE,
+  angle_col = 45, 
+  main = "EEC Gene Expression in Cluster 17 (befa vs gf vs cv)"
+)
+
+```
+
+
+## Enrichment analysis of all cells in cluster 17
+
+```{r, message=FALSE}
+Idents(mydata) <- "seurat_clusters"
+
+deg_cluster17 <- FindMarkers(mydata, ident.1 = 17, only.pos = TRUE)
+deg_genes <- rownames(deg_cluster17[deg_cluster17$p_val_adj < 0.05, ])
+
+
+entrez_ids <- mapIds(org.Dr.eg.db,
+                     keys = deg_genes,
+                     column = "ENTREZID",
+                     keytype = "ENSEMBL",
+                     multiVals = "first")
+```
+
+```{r}
+entrez_ids <- na.omit(entrez_ids)
+
+
+ego <- enrichGO(gene = entrez_ids,
+                OrgDb = org.Dr.eg.db,
+                keyType = "ENTREZID",
+                ont = "BP",
+                pAdjustMethod = "BH",
+                qvalueCutoff = 0.05,
+                readable = TRUE)
+
+```
+
+```{r, fig.width= 12, fig.height= 9}
+dotplot(ego, showCategory = 15, title = "GO Enrichment in Cluster 17 DEGs") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+```{r, message=FALSE}
+top_pathways <- head(ego@result, 15)  
+top_pathway_genes <- unique(unlist(strsplit(top_pathways$geneID, "/")))  
+
+
+top_pathway_genes_ensembl <- mapIds(org.Dr.eg.db, 
+                                   keys = top_pathway_genes, 
+                                   column = "ENSEMBL", 
+                                   keytype = "SYMBOL",
+                                   multiVals = "first") %>% na.omit()
+
+```
+
+
+### Find Top 20 High-Impact Genes
+
+Prioritize genes by both pathway relevance and expression (logFC)
+
+```{r}
+# Subset DEGs to those in top pathways
+pathway_deg <- cluster17_degs[rownames(cluster17_degs) %in% top_pathway_genes_ensembl, ]
+
+# Select top 20 by logFC 
+top20_pathway_genes <- pathway_deg %>% 
+  arrange(desc(avg_log2FC)) %>% 
+  head(20)
+
+```
+
+```{r}
+
+top20_matched <- data.frame(
+  symbol = top20_pathway_genes$gene_symbol,
+  ensembl = rownames(top20_pathway_genes)
+)
+
+
+DotPlot(mydata,
+        features = top20_matched$ensembl,  # Ensembl IDs for plotting
+        group.by = "seurat_clusters" )+
+  scale_x_discrete(
+    labels = setNames(top20_matched$symbol, top20_matched$ensembl)  # Map IDs to symbols
+  ) +
+  theme(axis.text.x = element_text(
+    angle = 45, 
+    hjust = 1,
+    face = "italic"  # Optional: italicize gene names
+  )) +
+  labs(x = "Genes", y = "Cluster")
+```
+
+### 20 High-Impact Genes between treatments 
+
+
+```{r}
+if (!require("tidyr")) install.packages("tidyr")
+library(tidyr)
+
+# Get expression data for top genes
+exp_data <- FetchData(
+  subset(mydata_gf_befa, idents = 17), 
+  vars = c(top20_matched$ensembl, "treatment")
+) %>%
+  pivot_longer(cols = -treatment, names_to = "gene", values_to = "expression") %>%
+  merge(top20_matched, by.x = "gene", by.y = "ensembl")
+
+# Plot
+ggplot(exp_data, aes(x = symbol, y = expression, fill = treatment)) +
+  geom_violin(scale = "width", position = position_dodge(0.8), trim = TRUE) +
+  geom_boxplot(width = 0.1, position = position_dodge(0.8), show.legend = FALSE) +
+  scale_fill_manual(values = c("befa" = "red", "gf" = "blue")) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic")) +
+  labs(x = "Genes", y = "Expression Level")
+```
+```{r}
+
+#
+avg_exp_heatmap <- AverageExpression(
+  subset(mydata_gf_befa, idents = 17),
+  features = top20_matched$ensembl,
+  group.by = "treatment",
+  assays = "RNA"
+)$RNA
+
+
+rownames(avg_exp_heatmap) <- top20_matched$symbol[match(rownames(avg_exp_heatmap), top20_matched$ensembl)]
+
+# Plot
+pheatmap::pheatmap(
+  avg_exp_heatmap,
+  cluster_rows = TRUE,
+  cluster_cols = FALSE,
+  color = viridis::viridis(100),
+  main = "Cluster 17: gf vs. befa Expression",
+  angle_col = 45
+)
+```
+### Comparing three clusters 17,30,46
+
+
+```{r}
+library(pheatmap)
+
+avg_exp <- AverageExpression(
+  subset(mydata, seurat_clusters %in% c(17, 30, 46) & treatment %in% c("gf", "befa")),
+  features = top20_matched$ensembl,
+  group.by = c("seurat_clusters", "treatment"),
+  assays = "RNA"
+)$RNA
+rownames(avg_exp) <- top20_matched$symbol[match(rownames(avg_exp), top20_matched$ensembl)]
+
+
+annotation_col <- data.frame(
+  Treatment = gsub(".*_(.*)", "\\1", colnames(avg_exp)),  # Extract "gf" or "befa"
+  Cluster = gsub("(\\d+)_.*", "\\1", colnames(avg_exp))   # Extract cluster number
+)
+rownames(annotation_col) <- colnames(avg_exp)
+
+
+pheatmap(
+  mat = avg_exp,
+  scale = "row",          # Normalize by gene 
+  color = colorRampPalette(c("blue", "white", "red"))(100),  
+  annotation_col = annotation_col,
+  show_colnames = TRUE,   # Show sample names 
+  angle_col = 45,         # Tilt column labels
+  main = "gf vs. befa Expression in Clusters 17/30/46"
+)
+
+
+```
+
+
+### Defining EECs
+
+addModuleScore() computes a module score for each cell, based on averaged expression of a gene set (like EEC markers), adjusted by a background control.
+For each cell, Seurat:
+
+- Averages the expression of your marker genes 
+
+- Subtracts the average expression of a matched control gene set
+
+- Returns the difference as the EEC_signature1 score
+
+A positive score means the cell expresses your marker set above background. Scores > 0.5 were considered EEC cells for the purpose of this analysis 
+
+```{r, message=FALSE}
+EEC_ids <- mapIds(org.Dr.eg.db,
+                  keys = EEC_genes,
+                  column = "ENSEMBL",
+                  keytype = "SYMBOL",
+                  multiVals = "first") %>%
+           na.omit()
+
+mydata <- AddModuleScore(mydata, features = list(EEC_ids), name = "EEC_signature")
+
+# save EEC classification as a new metadata column (for score > 0.5)
+mydata$EEC_class <- ifelse(mydata$EEC_signature1 > 0.5, "EEC", "Non-EEC")
+```
+
+```{r}
+
+deg_EEC <- FindMarkers(mydata,
+                       group.by = "EEC_class",
+                       ident.1 = "EEC",
+                       ident.2 = "Non-EEC",
+                       logfc.threshold = 0.25,
+                       min.pct = 0.1)
+
+deg_genes <- rownames(deg_EEC[deg_EEC$p_val_adj < 0.05, ])
+
+entrez_ids <- mapIds(org.Dr.eg.db,
+                     keys = deg_genes,
+                     column = "ENTREZID",
+                     keytype = "ENSEMBL",
+                     multiVals = "first") %>%
+              na.omit()
+```
+
+
+## Enrichment analysis of EECs (enrichgo)
+
+
+
+```{r,fig.width=11, fig.height=9}
+ego2 <- enrichGO(gene = entrez_ids,
+                OrgDb = org.Dr.eg.db,
+                keyType = "ENTREZID",
+                ont = "BP",
+                pAdjustMethod = "BH",
+                readable = TRUE)
+
+dotplot(ego, showCategory = 20, title = "Pathway Enrichment in EEC Cells") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+
+#### Genes responsible for top enrichment pathways 
+
+```{r, message=FALSE}
+# Get top 15 pathways and their associated genes
+top_pathways2 <- head(ego2@result, 15)
+pathway_genes2 <- strsplit(top_pathways$geneID, "/")  # Split gene symbols per pathway
+
+# Flatten list and keep unique genes
+unique_genes2 <- unique(unlist(pathway_genes2))
+
+# Map
+pathway_ensembl2 <- mapIds(org.Dr.eg.db,
+                         keys = unique_genes2,
+                         column = "ENSEMBL",
+                         keytype = "SYMBOL",
+                         multiVals = "first") %>%
+                  na.omit()
+
+top_impact_genes2 <- deg_EEC %>%
+  filter(rownames(.) %in% pathway_ensembl2) %>%
+  arrange(desc(avg_log2FC)) %>%
+  head(20)  # Adjust number as needed
+
+
+plot_genes2 <- rownames(top_impact_genes2)
+gene_symbols2 <- mapIds(org.Dr.eg.db,
+                      keys = plot_genes2,
+                      column = "SYMBOL",
+                      keytype = "ENSEMBL",
+                      multiVals = "first")
+```
+
+```{r}
+
+DotPlot(mydata,
+        features = plot_genes2,
+        group.by = "seurat_clusters",
+        cols = c("lightgrey", "red")) +
+  scale_x_discrete(labels = gene_symbols2) +  # Show symbols instead of Ensembl IDs
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic")) +
+  labs(title = "Top Pathway Genes Across Clusters")
+```
+
+-----------------------------------
+
+
+```{r}
+
+enterez <- mapIds(
+  org.Dr.eg.db,
+  keys = rownames(mydata),
+  column = "ENTREZID",
+  keytype = "ENSEMBL",
+)
+
+go_en <- enrichGO(
+  gene = na.omit(enterez), 
+  OrgDb = org.Dr.eg.db ,
+  ont = "BP" ,
+  pAdjustMethod = "BH" ,
+  pvalueCutoff = 0.1 
+)
+
+go_simple <- simplify(go_en)
+
+
+
+```
+
+```{r}
+
+
+pb <- AggregateExpression(
+  mydata,
+  assays = "RNA",
+  group.by = c("seurat_clusters", "treatment"),
+  return.seurat = TRUE
+  
+)
+
+de_res <- PseudobulkExpression(
+  pb,
+  clusters = pb$seurat_clusters,
+  treatment = pb$treatment ,
+  reference = "cv",
+  target = "befa",
+  assay = "RNA"
+)
+
+sig_genes <- subset(de_res$table, p.adjust < 0.05 & abs(log2FoldChange) > 0.5)
+
+```
